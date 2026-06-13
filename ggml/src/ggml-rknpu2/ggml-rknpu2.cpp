@@ -1070,7 +1070,18 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
 
     size_t tensor_offset_in_virtual = (uintptr_t)tensor->data - (uintptr_t)ctx->virtual_base;
 
+    // Store data in the CPU side buffer first so we have the full tensor payload
+    memcpy((uint8_t*)tensor->data + offset, data, size);
+
     if (pipeline) {
+        // If this is a chunked update, we must wait until the full tensor is loaded
+        // before we can correctly repack it. Since we don't have a specific callback
+        // for "tensor fully loaded", we simply repack it whenever the last chunk arrives.
+        // It's acceptable because weights are only loaded once.
+        if (offset + size < ggml_nbytes(tensor)) {
+            return;
+        }
+
         const int K = (int)tensor->ne[0];
         const int N = (int)tensor->ne[1];
         const int K_op = pipeline->use_hadamard ? rknpu2_calibration::next_power_of_two(K) : K;
@@ -1107,7 +1118,7 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
 
         std::vector<float> seg_fp32;
         std::vector<uint8_t> seg_npu;
-        uint8_t* current_write_ptr = tensor_dma_ptr + offset;
+        uint8_t* current_write_ptr = tensor_dma_ptr;
 
         std::vector<float> tensor_block_scales;
 
@@ -1116,8 +1127,8 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
             for (const auto& n_seg : n_segments) {
                 if (n_seg.size_n == 0) continue;
 
-                // Dequantizing the block
-                dequantize_tensor_segment(seg_fp32, tensor, ctx, data, K, N, K_op, k_seg, n_seg, pipeline->use_hadamard);
+                // Dequantizing the block from the FULL accumulated CPU buffer (tensor->data)
+                dequantize_tensor_segment(seg_fp32, tensor, ctx, tensor->data, K, N, K_op, k_seg, n_seg, pipeline->use_hadamard);
 
                 // Calculating local scale of the block
                 float block_scale = 1.0f;
@@ -1152,8 +1163,6 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
 
         rknn_matmul_ctx sync_ctx = g_domain_manager.get_allocator_context(alloc.iommu_domain_id);
         RKNN_CHECK(rknn_mem_sync(sync_ctx, alloc.mem, RKNN_MEMORY_SYNC_TO_DEVICE), "sync B TO_DEVICE");
-    } else {
-        memcpy((uint8_t*)tensor->data + offset, data, size);
     }
 }
 
