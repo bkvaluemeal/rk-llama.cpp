@@ -1078,7 +1078,8 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
         // Initializing Hadamard Transform Logic
         if (pipeline->use_hadamard) {
             std::vector<float> s_vec(K_op, 1.0f);
-            std::mt19937 gen(reinterpret_cast<uintptr_t>(tensor));
+            // Use tensor offset instead of pointer for deterministic seeding across RPC runs
+            std::mt19937 gen(reinterpret_cast<uintptr_t>(ctx->virtual_base) + tensor_offset_in_virtual);
             std::uniform_int_distribution<int> distrib(0, 1);
 
             for(int k = 0; k < K_op; ++k) {
