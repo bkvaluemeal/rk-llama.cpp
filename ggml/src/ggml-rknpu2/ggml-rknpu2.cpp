@@ -274,10 +274,10 @@ struct ggml_backend_rknpu_buffer_context {
     std::unordered_map<size_t, TensorAllocation> tensor_allocs;
 
     // Per-block scaling factors for quantized weights
-    std::unordered_map<const struct ggml_tensor *, std::vector<float>> quantized_tensor_scales;
+    std::unordered_map<size_t, std::vector<float>> quantized_tensor_scales;
 
     // Per-tensor random sign vector for Hadamard Transform
-    std::unordered_map<const struct ggml_tensor *, std::vector<float>> hadamard_s_vectors;
+    std::unordered_map<size_t, std::vector<float>> hadamard_s_vectors;
 
     std::mutex mutex;
 
@@ -551,7 +551,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         std::vector<float> s_vec;
         if (is_hadamard) {
             std::lock_guard<std::mutex> lock(src0_buf_ctx->mutex);
-            auto it = src0_buf_ctx->hadamard_s_vectors.find(src0);
+            auto it = src0_buf_ctx->hadamard_s_vectors.find(tensor_offset_in_virtual);
             GGML_ASSERT(it != src0_buf_ctx->hadamard_s_vectors.end() && "Hadamard 's' vector not found");
             s_vec = it->second;
         }
@@ -560,7 +560,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         std::vector<float> scales_B_grid;
         if (pipeline->npu_type_b == rknpu2_configuration::NPU_TYPE_INT8 || pipeline->npu_type_b == rknpu2_configuration::NPU_TYPE_INT4) {
             std::lock_guard<std::mutex> lock(src0_buf_ctx->mutex);
-            auto it = src0_buf_ctx->quantized_tensor_scales.find(src0);
+            auto it = src0_buf_ctx->quantized_tensor_scales.find(tensor_offset_in_virtual);
             GGML_ASSERT(it != src0_buf_ctx->quantized_tensor_scales.end() && "Quantized scales grid not found");
             scales_B_grid = it->second;
         }
@@ -923,8 +923,9 @@ static void dequantize_tensor_segment(
 
     std::vector<float> s_vec;
     if (use_hadamard) {
+        size_t tensor_offset_in_virtual = (uintptr_t)tensor->data - (uintptr_t)ctx->virtual_base;
         std::lock_guard<std::mutex> lock(ctx->mutex);
-        s_vec = ctx->hadamard_s_vectors[tensor];
+        s_vec = ctx->hadamard_s_vectors[tensor_offset_in_virtual];
     }
 
     #pragma omp parallel for
@@ -1085,7 +1086,7 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
             }
 
             std::lock_guard<std::mutex> lock(ctx->mutex);
-            ctx->hadamard_s_vectors[tensor] = s_vec;
+            ctx->hadamard_s_vectors[tensor_offset_in_virtual] = s_vec;
         }
 
         // Computing global scale
@@ -1145,7 +1146,7 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
 
         {
             std::lock_guard<std::mutex> lock(ctx->mutex);
-            ctx->quantized_tensor_scales[tensor] = tensor_block_scales;
+            ctx->quantized_tensor_scales[tensor_offset_in_virtual] = tensor_block_scales;
         }
 
         rknn_matmul_ctx sync_ctx = g_domain_manager.get_allocator_context(alloc.iommu_domain_id);
