@@ -1074,13 +1074,10 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
     memcpy((uint8_t*)tensor->data + offset, data, size);
 
     if (pipeline) {
-        // If this is a chunked update, we must wait until the full tensor is loaded
-        // before we can correctly repack it. Since we don't have a specific callback
-        // for "tensor fully loaded", we simply repack it whenever the last chunk arrives.
-        // It's acceptable because weights are only loaded once.
-        if (offset + size < ggml_nbytes(tensor)) {
-            return;
-        }
+        // Pack the entire tensor every time set_tensor is called.
+        // This ensures the NPU buffer always matches the CPU buffer, even if the RPC server
+        // sends the tensor in out-of-order chunks. Repacking on every chunk is slower during
+        // startup, but guarantees correctness without requiring a "fully loaded" callback.
 
         const int K = (int)tensor->ne[0];
         const int N = (int)tensor->ne[1];
